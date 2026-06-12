@@ -10,16 +10,18 @@ import os
 import io
 import base64
 from flask import Flask, request, jsonify
+from flask_cors import CORS  # ← AGREGAR CORS
 from PIL import Image, ImageEnhance
 
 # Importar rembg
 try:
     from rembg import remove
 except ImportError:
-    print("INSTALAR: pip install rembg pillow onnxruntime")
+    print("INSTALAR: pip install rembg pillow onnxruntime flask-cors")
     raise
 
 app = Flask(__name__)
+CORS(app)  # ← HABILITAR CORS EN TODA LA APP
 
 # ── HEALTH CHECK ────────────────────────────────────────
 @app.route('/', methods=['GET'])
@@ -31,7 +33,7 @@ def health():
     })
 
 # ── REMOVE BACKGROUND ENDPOINT ──────────────────────────
-@app.route('/remove-bg', methods=['POST'])
+@app.route('/remove-bg', methods=['POST', 'OPTIONS'])  # ← AGREGAR OPTIONS
 def remove_background():
     """
     Recibe: JSON con imagen en Base64
@@ -124,45 +126,30 @@ def remove_background():
             'error': str(e)
         }), 500
 
-# ── BATCH REMOVE BACKGROUND (Opcional) ──────────────────
-@app.route('/remove-bg-batch', methods=['POST'])
+# ── REMOVE BACKGROUND BATCH ────────────────────────────
+@app.route('/remove-bg-batch', methods=['POST', 'OPTIONS'])
 def remove_background_batch():
     """
     Procesa múltiples imágenes
-    
-    Request:
-    {
-        "images": [
-            {"id": "img1", "image": "base64..."},
-            {"id": "img2", "image": "base64..."}
-        ]
-    }
-    
-    Response:
-    {
-        "success": true,
-        "results": [
-            {"id": "img1", "image": "base64...", "status": "ok"},
-            {"id": "img2", "image": "base64...", "status": "ok"}
-        ]
-    }
+    Recibe: { images: [{ id: '1', image: 'base64...' }, ...] }
+    Devuelve: { success: true, results: [...] }
     """
     try:
         data = request.json
         if not data or 'images' not in data:
             return jsonify({
                 'success': False,
-                'error': 'Missing "images" array'
+                'error': 'Missing "images" in request body'
             }), 400
         
         images = data['images']
         results = []
         
         for img_obj in images:
-            img_id = img_obj.get('id', 'unknown')
-            img_data = img_obj.get('image', '')
-            
             try:
+                img_id = img_obj.get('id', 'unknown')
+                img_data = img_obj.get('image', '')
+                
                 # Extraer base64
                 if ',' in img_data:
                     img_data = img_data.split(',')[1]
