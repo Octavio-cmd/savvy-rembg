@@ -100,8 +100,6 @@ def remove_background():
             output_image = output_image.crop(crop_box)
         
         # 5. AUMENTAR BRILLO 25% (igual que quitar_fondos.py)
-        enhancer = ImageEnhance.Brightness(output_image)
-        output_image = enhancer.enhance(1.25)
         
         # 6. GUARDAR COMO PNG TRANSPARENTE
         output_buffer = io.BytesIO()
@@ -172,8 +170,6 @@ def remove_background_batch():
                     output_image = output_image.crop(crop_box)
                 
                 # Brillo
-                enhancer = ImageEnhance.Brightness(output_image)
-                output_image = enhancer.enhance(1.25)
                 
                 # Guardar
                 output_buffer = io.BytesIO()
