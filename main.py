@@ -31,8 +31,8 @@ CORS(app)
 
 class EbayTokenManager:
     def __init__(self):
-        self.app_id = 'StevenGa-SavvySca-PRD-81addbb012-655f2649'
-        self.cert_id = 'PRD-1addb012c112-1d46-4c31-9731-99d5'
+        self.app_id = 'StevenGa-SavvySca-PRD-8laddb012-655f2649'
+        self.cert_id = 'PRD-1addb012c1l2-1d46-4c31-9731-99d5'
         self.access_token = None
         self.token_expiry = None
         self.oauth_url = 'https://api.ebay.com/identity/v1/oauth2/token'
