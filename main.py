@@ -1,7 +1,7 @@
 """
 ========================================================================
-  SAVVY SCANNER - Remove Background API + eBay Search
-  Flask + rembg + web scraping para iPhone
+  SAVVY SCANNER - Remove Background API + eBay Browse API (OAuth)
+  Flask + rembg + eBay OAuth automático para iPhone
   Deploy: Railway.app (FREE)
 ========================================================================
 """
@@ -10,9 +10,10 @@ import os
 import io
 import base64
 import requests
+from datetime import datetime, timedelta
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from PIL import Image, ImageEnhance
+from PIL import Image
 
 # Importar rembg
 try:
@@ -24,13 +25,84 @@ except ImportError:
 app = Flask(__name__)
 CORS(app)
 
-# ── HEALTH CHECK ────────────────────────────────────────
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# EBAY OAUTH MANAGER
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+class EbayTokenManager:
+    def __init__(self):
+        self.app_id = 'StevenGa-SavvySca-PRD-81addbb012-655f2649'
+        self.cert_id = 'PRD-1addb012c112-1d46-4c31-9731-99d5'
+        self.access_token = None
+        self.token_expiry = None
+        self.oauth_url = 'https://api.ebay.com/identity/v1/oauth2/token'
+        self.scopes = 'https://api.ebay.com/oauth/api_scope'
+    
+    def _get_client_credentials(self):
+        """Basic Auth con App ID y Cert ID"""
+        credentials = f'{self.app_id}:{self.cert_id}'
+        encoded = base64.b64encode(credentials.encode()).decode()
+        return f'Basic {encoded}'
+    
+    def generate_token(self):
+        """Genera Application Token (no expira)"""
+        print('🔑 [OAUTH] Generando Application Token...')
+        try:
+            headers = {
+                'Authorization': self._get_client_credentials(),
+                'Content-Type': 'application/x-www-form-urlencoded'
+            }
+            
+            data = {
+                'grant_type': 'client_credentials',
+                'scope': self.scopes
+            }
+            
+            response = requests.post(self.oauth_url, headers=headers, data=data, timeout=10)
+            
+            if response.status_code != 200:
+                print(f'❌ [OAUTH] Error {response.status_code}: {response.text[:200]}')
+                return False
+            
+            result = response.json()
+            self.access_token = result.get('access_token')
+            expires_in = result.get('expires_in', 7200)
+            self.token_expiry = datetime.now() + timedelta(seconds=expires_in)
+            
+            print(f'✅ [OAUTH] Token generado: {self.access_token[:30]}...')
+            print(f'   Expira: {self.token_expiry}')
+            return True
+        
+        except Exception as e:
+            print(f'❌ [OAUTH] Error: {str(e)}')
+            return False
+    
+    def get_valid_token(self):
+        """Retorna token válido (genera uno nuevo si es necesario)"""
+        # Si no hay token, generar
+        if not self.access_token:
+            self.generate_token()
+            return self.access_token
+        
+        # Si expira en < 5 minutos, renovar
+        if self.token_expiry and datetime.now() > (self.token_expiry - timedelta(minutes=5)):
+            self.generate_token()
+        
+        return self.access_token
+
+# Instancia global del manager
+token_manager = EbayTokenManager()
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# ENDPOINTS
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
 @app.route('/', methods=['GET'])
 def health():
     return jsonify({
         'status': 'online',
-        'service': 'Savvy Scanner - Remove Background API + eBay Search',
-        'version': '2.0',
+        'service': 'Savvy Scanner - Background Removal + eBay Search (OAuth)',
+        'version': '3.0',
         'endpoints': [
             '/remove-bg (POST)',
             '/remove-bg-batch (POST)',
@@ -38,50 +110,26 @@ def health():
         ]
     })
 
-# ── REMOVE BACKGROUND ENDPOINT ──────────────────────────
+# ── REMOVE BACKGROUND ──────────────────────────────────
 @app.route('/remove-bg', methods=['POST', 'OPTIONS'])
 def remove_background():
-    """
-    Recibe: JSON con imagen en Base64
-    Procesa: Quita fondo con rembg
-    Devuelve: PNG sin fondo en Base64
-    """
-    
     try:
-        # 1. PARSEAR REQUEST
         data = request.json
         if not data or 'image' not in data:
-            return jsonify({
-                'success': False,
-                'error': 'Missing "image" in request body'
-            }), 400
+            return jsonify({'success': False, 'error': 'Missing image'}), 400
         
         img_data = data['image']
-        
-        # Si viene como data:image/jpeg;base64,... extraer la parte base64
         if ',' in img_data:
             img_data = img_data.split(',')[1]
         
-        # 2. DECODIFICAR BASE64 → PIL Image
-        try:
-            img_bytes = base64.b64decode(img_data)
-            input_image = Image.open(io.BytesIO(img_bytes)).convert('RGB')
-        except Exception as e:
-            return jsonify({
-                'success': False,
-                'error': f'Invalid image format: {str(e)}'
-            }), 400
-        
-        # 3. QUITAR FONDO con rembg
+        img_bytes = base64.b64decode(img_data)
+        input_image = Image.open(io.BytesIO(img_bytes)).convert('RGB')
         output_image = remove(input_image)
         
-        # 4. AUTO-CROP
+        # Auto-crop
         bbox = output_image.getbbox()
         if bbox and bbox != (0, 0, output_image.width, output_image.height):
-            width = bbox[2] - bbox[0]
-            height = bbox[3] - bbox[1]
-            margin = max(5, int(min(width, height) * 0.02))
-            
+            margin = max(5, int(min(bbox[2]-bbox[0], bbox[3]-bbox[1]) * 0.02))
             crop_box = (
                 max(0, bbox[0] - margin),
                 max(0, bbox[1] - margin),
@@ -90,47 +138,31 @@ def remove_background():
             )
             output_image = output_image.crop(crop_box)
         
-        # 5. GUARDAR COMO PNG TRANSPARENTE
         output_buffer = io.BytesIO()
         output_image.save(output_buffer, format='PNG', optimize=True)
-        output_buffer.seek(0)
-        
-        # 6. CODIFICAR A BASE64
         result_b64 = base64.b64encode(output_buffer.getvalue()).decode('utf-8')
         
         return jsonify({
             'success': True,
             'image': result_b64,
             'format': 'png',
-            'size': f'{output_image.width}x{output_image.height}',
-            'message': 'Background removed successfully'
+            'size': f'{output_image.width}x{output_image.height}'
         })
     
     except Exception as e:
-        print(f'❌ Error en /remove-bg: {str(e)}')
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
+        print(f'❌ Error /remove-bg: {str(e)}')
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 # ── REMOVE BACKGROUND BATCH ────────────────────────────
 @app.route('/remove-bg-batch', methods=['POST', 'OPTIONS'])
 def remove_background_batch():
-    """
-    Procesa múltiples imágenes
-    """
     try:
         data = request.json
         if not data or 'images' not in data:
-            return jsonify({
-                'success': False,
-                'error': 'Missing "images" in request body'
-            }), 400
+            return jsonify({'success': False, 'error': 'Missing images'}), 400
         
-        images = data['images']
         results = []
-        
-        for img_obj in images:
+        for img_obj in data['images']:
             try:
                 img_id = img_obj.get('id', 'unknown')
                 img_data = img_obj.get('image', '')
@@ -145,55 +177,38 @@ def remove_background_batch():
                 bbox = output_image.getbbox()
                 if bbox:
                     margin = max(5, int(min(bbox[2]-bbox[0], bbox[3]-bbox[1]) * 0.02))
-                    crop_box = (
-                        max(0, bbox[0] - margin),
-                        max(0, bbox[1] - margin),
-                        min(output_image.width, bbox[2] + margin),
-                        min(output_image.height, bbox[3] + margin)
-                    )
+                    crop_box = (max(0, bbox[0]-margin), max(0, bbox[1]-margin),
+                               min(output_image.width, bbox[2]+margin), min(output_image.height, bbox[3]+margin))
                     output_image = output_image.crop(crop_box)
                 
                 output_buffer = io.BytesIO()
                 output_image.save(output_buffer, format='PNG', optimize=True)
                 result_b64 = base64.b64encode(output_buffer.getvalue()).decode('utf-8')
                 
-                results.append({
-                    'id': img_id,
-                    'image': result_b64,
-                    'status': 'ok'
-                })
+                results.append({'id': img_id, 'image': result_b64, 'status': 'ok'})
             
             except Exception as e:
-                results.append({
-                    'id': img_id,
-                    'status': 'error',
-                    'error': str(e)
-                })
+                results.append({'id': img_id, 'status': 'error', 'error': str(e)})
         
         return jsonify({
             'success': True,
             'results': results,
-            'total': len(images),
+            'total': len(data['images']),
             'succeeded': len([r for r in results if r['status'] == 'ok'])
         })
     
     except Exception as e:
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
+        return jsonify({'success': False, 'error': str(e)}), 500
 
-# ── EBAY SEARCH ENDPOINT ────────────────────────────────
+# ── EBAY SEARCH (OAuth) ────────────────────────────────
 @app.route('/ebay-search', methods=['GET'])
 def ebay_search():
     """
-    Busca en eBay por UPC o keywords
+    Busca en eBay usando Browse API con OAuth automático
     
     Uso:
     - /ebay-search?upc=198533572597
     - /ebay-search?keywords=shirt
-    
-    Retorna: { found, product, topTitles, pricing }
     """
     try:
         upc = request.args.get('upc')
@@ -201,41 +216,92 @@ def ebay_search():
         
         if not upc and not keywords:
             return jsonify({
-                'success': False,
+                'found': False,
                 'error': 'Provide either "upc" or "keywords" parameter'
             }), 400
         
-        # Construir URL de búsqueda en eBay
-        search_url = 'https://www.ebay.com/sch/i.html'
-        params = {
-            '_nkw': upc if upc else keywords,
-            '_sacat': '0',
-            '_from': 'R40',
-            'rt': 'nc'
-        }
+        query = upc if upc else keywords
+        print(f'🔍 [SEARCH] Buscando: {query}')
         
-        print(f'🔍 Buscando en eBay: {params["_nkw"]}')
+        # Obtener token válido
+        token = token_manager.get_valid_token()
         
-        # Hacer solicitud con User-Agent realista
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.5',
-            'DNT': '1',
-            'Connection': 'keep-alive'
-        }
-        
-        res = requests.get(search_url, params=params, headers=headers, timeout=10)
-        
-        if res.status_code != 200:
+        if not token:
             return jsonify({
                 'found': False,
-                'error': f'eBay returned {res.status_code}',
-                'source': 'ebay_search'
-            }), res.status_code
+                'error': 'Failed to obtain OAuth token',
+                'source': 'ebay_oauth'
+            }), 500
         
-        # Parsear HTML
-        result = parse_ebay_html(res.text, upc if upc else keywords)
+        # Hacer búsqueda en eBay Browse API
+        headers = {
+            'Authorization': f'Bearer {token}',
+            'X-EBAY-C-MARKETPLACE-ID': 'EBAY_US',
+            'X-EBAY-C-ENDUSERCTX': 'contextualshoppingflag,0',
+            'Content-Type': 'application/json',
+            'Accept': 'application/json'
+        }
+        
+        url = 'https://api.ebay.com/buy/browse/v1/item_summary/search'
+        params = {
+            'q': query,
+            'limit': '10',
+            'filter': 'conditionIds:{1000}'
+        }
+        
+        response = requests.get(url, headers=headers, params=params, timeout=10)
+        
+        print(f'📥 [SEARCH] Status: {response.status_code}')
+        
+        if response.status_code != 200:
+            print(f'❌ [SEARCH] Error: {response.text[:300]}')
+            return jsonify({
+                'found': False,
+                'error': f'eBay returned {response.status_code}',
+                'details': response.text[:500],
+                'source': 'ebay_oauth'
+            }), response.status_code
+        
+        data = response.json()
+        items = data.get('itemSummaries', [])
+        
+        print(f'✅ [SEARCH] Encontrados {len(items)} items')
+        
+        # Procesar resultados
+        result = {
+            'found': len(items) > 0,
+            'product': None,
+            'topTitles': [],
+            'pricing': {
+                'active': {'low': 0, 'high': 0, 'median': 0},
+                'sold': {'low': 0, 'high': 0, 'median': 0, 'count': 0}
+            },
+            'source': 'ebay_oauth'
+        }
+        
+        if items:
+            result['topTitles'] = [item.get('title') for item in items if item.get('title')]
+            
+            # Procesar primer item
+            top_item = items[0]
+            price = float(top_item.get('price', {}).get('value', 0))
+            
+            result['product'] = {
+                'name': top_item.get('title', ''),
+                'itemId': top_item.get('itemId', ''),
+                'price': price,
+                'condition': top_item.get('condition', 'New'),
+                'currency': top_item.get('price', {}).get('currency', 'USD')
+            }
+            
+            if price > 0:
+                result['pricing']['active']['low'] = price
+                result['pricing']['active']['high'] = price * 1.15
+                result['pricing']['active']['median'] = price
+                result['pricing']['sold']['low'] = price * 0.85
+                result['pricing']['sold']['high'] = price * 1.15
+                result['pricing']['sold']['median'] = price
+                result['pricing']['sold']['count'] = 5
         
         return jsonify(result)
     
@@ -243,126 +309,21 @@ def ebay_search():
         return jsonify({
             'found': False,
             'error': 'Request timeout',
-            'source': 'ebay_search'
+            'source': 'ebay_oauth'
         }), 504
     
     except Exception as e:
-        print(f'❌ Error en /ebay-search: {str(e)}')
+        print(f'❌ Error /ebay-search: {str(e)}')
         return jsonify({
             'found': False,
             'error': str(e),
-            'source': 'ebay_search'
+            'source': 'ebay_oauth'
         }), 500
 
-# ── PARSER HTML ─────────────────────────────────────────
-def parse_ebay_html(html, query):
-    """
-    Extrae datos de la página HTML de eBay
-    """
-    result = {
-        'found': False,
-        'product': None,
-        'topTitles': [],
-        'pricing': {
-            'active': {'low': 0, 'high': 0, 'median': 0},
-            'sold': {'low': 0, 'high': 0, 'median': 0, 'count': 0}
-        },
-        'source': 'ebay_search'
-    }
-    
-    try:
-        import re
-        
-        # Buscar items en el HTML
-        # Patrón 1: data-component-type="s-search-result"
-        item_pattern = r'<div[^>]*data-component-type="s-search-result"[^>]*>[\s\S]*?(?=<div[^>]*data-component-type="s-search-result"|$)'
-        items = re.findall(item_pattern, html)
-        
-        print(f'📦 Encontrados {len(items)} items (patrón 1)')
-        
-        # Si no hay items, intentar patrón alternativo
-        if not items:
-            item_pattern = r'<span[^>]*role="heading"[^>]*>([^<]+)<\/span>'
-            titles = re.findall(item_pattern, html)
-            print(f'📦 Encontrados {len(titles)} títulos (patrón 2)')
-            
-            if titles:
-                result['found'] = True
-                result['topTitles'] = titles[:5]
-                
-                # Buscar primer precio
-                price_pattern = r'\$[\d,]+\.?\d{0,2}'
-                prices = re.findall(price_pattern, html)
-                if prices:
-                    try:
-                        price = float(prices[0].replace('$', '').replace(',', ''))
-                        result['product'] = {
-                            'name': titles[0],
-                            'price': price,
-                            'condition': 'New',
-                            'currency': 'USD'
-                        }
-                        result['pricing']['active']['low'] = price
-                        result['pricing']['active']['high'] = price * 1.15
-                        result['pricing']['active']['median'] = price
-                    except:
-                        pass
-        
-        else:
-            # Procesar items encontrados
-            result['found'] = True
-            
-            for i, item_html in enumerate(items[:5]):
-                try:
-                    # Extraer título
-                    title_match = re.search(r'<span[^>]*role="heading"[^>]*>([^<]+)<\/span>', item_html)
-                    if not title_match:
-                        title_match = re.search(r'<h3[^>]*>([^<]+)<\/h3>', item_html)
-                    
-                    title = title_match.group(1).strip() if title_match else 'Unknown'
-                    
-                    # Extraer precio
-                    price_match = re.search(r'\$[\d,]+\.?\d{0,2}', item_html)
-                    price = 0
-                    if price_match:
-                        price_str = price_match.group(0).replace('$', '').replace(',', '')
-                        try:
-                            price = float(price_str)
-                        except:
-                            price = 0
-                    
-                    result['topTitles'].append(title)
-                    
-                    if i == 0:
-                        # Primer item (el mejor resultado)
-                        result['product'] = {
-                            'name': title,
-                            'price': price,
-                            'condition': 'New',
-                            'currency': 'USD'
-                        }
-                        
-                        if price > 0:
-                            result['pricing']['active']['low'] = price
-                            result['pricing']['active']['high'] = price * 1.15
-                            result['pricing']['active']['median'] = price
-                            result['pricing']['sold']['low'] = price * 0.85
-                            result['pricing']['sold']['high'] = price * 1.15
-                            result['pricing']['sold']['median'] = price
-                            result['pricing']['sold']['count'] = 5
-                
-                except Exception as e:
-                    print(f'⚠️ Error al procesar item {i}: {str(e)}')
-                    continue
-        
-        print(f'✅ Parseo completado: found={result["found"]}, items={len(result["topTitles"])}')
-        return result
-    
-    except Exception as e:
-        print(f'❌ Error en parse_ebay_html: {str(e)}')
-        return result
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# SERVIDOR
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-# ── SERVIDOR ────────────────────────────────────────────
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port, debug=False)
