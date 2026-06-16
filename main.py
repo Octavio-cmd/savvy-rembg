@@ -129,7 +129,7 @@ def remove_background():
         # Auto-crop with larger margin for clothing (prevent cutting sleeves)
         bbox = output_image.getbbox()
         if bbox and bbox != (0, 0, output_image.width, output_image.height):
-            margin = max(30, int(min(bbox[2]-bbox[0], bbox[3]-bbox[1]) * 0.10))
+            margin = max(50, int(min(bbox[2]-bbox[0], bbox[3]-bbox[1]) * 0.15))
             crop_box = (
                 max(0, bbox[0] - margin),
                 max(0, bbox[1] - margin),
@@ -176,7 +176,7 @@ def remove_background_batch():
                 
                 bbox = output_image.getbbox()
                 if bbox:
-                    margin = max(30, int(min(bbox[2]-bbox[0], bbox[3]-bbox[1]) * 0.10))
+                    margin = max(50, int(min(bbox[2]-bbox[0], bbox[3]-bbox[1]) * 0.15))
                     crop_box = (max(0, bbox[0]-margin), max(0, bbox[1]-margin),
                                min(output_image.width, bbox[2]+margin), min(output_image.height, bbox[3]+margin))
                     output_image = output_image.crop(crop_box)
