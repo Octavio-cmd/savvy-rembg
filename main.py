@@ -1,329 +1,219 @@
-"""
-========================================================================
-  SAVVY SCANNER - Remove Background API + eBay Browse API (OAuth)
-  Flask + rembg + eBay OAuth automático para iPhone
-  Deploy: Railway.app (FREE)
-========================================================================
-"""
-
 import os
-import io
-import base64
 import requests
-from datetime import datetime, timedelta
-from flask import Flask, request, jsonify
-from flask_cors import CORS
-from PIL import Image
-
-# Importar rembg
-try:
-    from rembg import remove
-except ImportError:
-    print("INSTALAR: pip install rembg pillow onnxruntime flask-cors requests")
-    raise
+from flask import Flask, jsonify, request
 
 app = Flask(__name__)
-CORS(app)
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# EBAY OAUTH MANAGER
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Environment variables (set in Railway)
+EBAY_APP_ID = os.environ.get('EBAY_APP_ID')
+EBAY_DEV_ID = os.environ.get('EBAY_DEV_ID')
+EBAY_CERT_ID = os.environ.get('EBAY_CERT_ID')
 
-class EbayTokenManager:
-    def __init__(self):
-        self.app_id = 'StevenGa-SavvySca-PRD-8laddb012-655f2649'
-        self.cert_id = 'PRD-1addb012c1l2-1d46-4c31-9731-99d5'
-        self.access_token = None
-        self.token_expiry = None
-        self.oauth_url = 'https://api.ebay.com/identity/v1/oauth2/token'
-        self.scopes = 'https://api.ebay.com/oauth/api_scope'
-    
-    def _get_client_credentials(self):
-        """Basic Auth con App ID y Cert ID"""
-        credentials = f'{self.app_id}:{self.cert_id}'
-        encoded = base64.b64encode(credentials.encode()).decode()
-        return f'Basic {encoded}'
-    
-    def generate_token(self):
-        """Genera Application Token (no expira)"""
-        print('🔑 [OAUTH] Generando Application Token...')
-        try:
-            headers = {
-                'Authorization': self._get_client_credentials(),
-                'Content-Type': 'application/x-www-form-urlencoded'
-            }
-            
-            data = {
-                'grant_type': 'client_credentials',
-                'scope': self.scopes
-            }
-            
-            response = requests.post(self.oauth_url, headers=headers, data=data, timeout=10)
-            
-            if response.status_code != 200:
-                print(f'❌ [OAUTH] Error {response.status_code}: {response.text[:200]}')
-                return False
-            
-            result = response.json()
-            self.access_token = result.get('access_token')
-            expires_in = result.get('expires_in', 7200)
-            self.token_expiry = datetime.now() + timedelta(seconds=expires_in)
-            
-            print(f'✅ [OAUTH] Token generado: {self.access_token[:30]}...')
-            print(f'   Expira: {self.token_expiry}')
-            return True
-        
-        except Exception as e:
-            print(f'❌ [OAUTH] Error: {str(e)}')
-            return False
-    
-    def get_valid_token(self):
-        """Retorna token válido (genera uno nuevo si es necesario)"""
-        # Si no hay token, generar
-        if not self.access_token:
-            self.generate_token()
-            return self.access_token
-        
-        # Si expira en < 5 minutos, renovar
-        if self.token_expiry and datetime.now() > (self.token_expiry - timedelta(minutes=5)):
-            self.generate_token()
-        
-        return self.access_token
+EBAY_FINDING_URL = "https://svcs.ebay.com/services/search/FindingService/v1"
 
-# Instancia global del manager
-token_manager = EbayTokenManager()
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# ENDPOINTS
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-@app.route('/', methods=['GET'])
+@app.route('/health', methods=['GET'])
 def health():
-    return jsonify({
-        'status': 'online',
-        'service': 'Savvy Scanner - Background Removal + eBay Search (OAuth)',
-        'version': '3.0',
-        'endpoints': [
-            '/remove-bg (POST)',
-            '/remove-bg-batch (POST)',
-            '/ebay-search (GET)?upc=XXXXX or ?keywords=XXXXX'
-        ]
-    })
+    return jsonify({"status": "ok"}), 200
 
-# ── REMOVE BACKGROUND ──────────────────────────────────
-@app.route('/remove-bg', methods=['POST', 'OPTIONS'])
-def remove_background():
-    try:
-        data = request.json
-        if not data or 'image' not in data:
-            return jsonify({'success': False, 'error': 'Missing image'}), 400
-        
-        img_data = data['image']
-        if ',' in img_data:
-            img_data = img_data.split(',')[1]
-        
-        img_bytes = base64.b64decode(img_data)
-        input_image = Image.open(io.BytesIO(img_bytes)).convert('RGB')
-        output_image = remove(input_image)
-        
-        # Auto-crop with larger margin for clothing (prevent cutting sleeves)
-        bbox = output_image.getbbox()
-        if bbox and bbox != (0, 0, output_image.width, output_image.height):
-            margin = max(50, int(min(bbox[2]-bbox[0], bbox[3]-bbox[1]) * 0.15))
-            crop_box = (
-                max(0, bbox[0] - margin),
-                max(0, bbox[1] - margin),
-                min(output_image.width, bbox[2] + margin),
-                min(output_image.height, bbox[3] + margin)
-            )
-            output_image = output_image.crop(crop_box)
-        
-        output_buffer = io.BytesIO()
-        output_image.save(output_buffer, format='PNG', optimize=True)
-        result_b64 = base64.b64encode(output_buffer.getvalue()).decode('utf-8')
-        
-        return jsonify({
-            'success': True,
-            'image': result_b64,
-            'format': 'png',
-            'size': f'{output_image.width}x{output_image.height}'
-        })
-    
-    except Exception as e:
-        print(f'❌ Error /remove-bg: {str(e)}')
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-# ── REMOVE BACKGROUND BATCH ────────────────────────────
-@app.route('/remove-bg-batch', methods=['POST', 'OPTIONS'])
-def remove_background_batch():
-    try:
-        data = request.json
-        if not data or 'images' not in data:
-            return jsonify({'success': False, 'error': 'Missing images'}), 400
-        
-        results = []
-        for img_obj in data['images']:
-            try:
-                img_id = img_obj.get('id', 'unknown')
-                img_data = img_obj.get('image', '')
-                
-                if ',' in img_data:
-                    img_data = img_data.split(',')[1]
-                
-                img_bytes = base64.b64decode(img_data)
-                input_image = Image.open(io.BytesIO(img_bytes)).convert('RGB')
-                output_image = remove(input_image)
-                
-                bbox = output_image.getbbox()
-                if bbox:
-                    margin = max(50, int(min(bbox[2]-bbox[0], bbox[3]-bbox[1]) * 0.15))
-                    crop_box = (max(0, bbox[0]-margin), max(0, bbox[1]-margin),
-                               min(output_image.width, bbox[2]+margin), min(output_image.height, bbox[3]+margin))
-                    output_image = output_image.crop(crop_box)
-                
-                output_buffer = io.BytesIO()
-                output_image.save(output_buffer, format='PNG', optimize=True)
-                result_b64 = base64.b64encode(output_buffer.getvalue()).decode('utf-8')
-                
-                results.append({'id': img_id, 'image': result_b64, 'status': 'ok'})
-            
-            except Exception as e:
-                results.append({'id': img_id, 'status': 'error', 'error': str(e)})
-        
-        return jsonify({
-            'success': True,
-            'results': results,
-            'total': len(data['images']),
-            'succeeded': len([r for r in results if r['status'] == 'ok'])
-        })
-    
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-# ── EBAY SEARCH (OAuth) ────────────────────────────────
-@app.route('/ebay-search', methods=['GET'])
-def ebay_search():
+@app.route('/search', methods=['GET'])
+def search_ebay():
     """
-    Busca en eBay usando Browse API con OAuth automático
-    
-    Uso:
-    - /ebay-search?upc=198533572597
-    - /ebay-search?keywords=shirt
+    GET /search?q=keyword&size=XL
+    Returns: {found, query, listings, stats, suggested}
     """
+    query = request.args.get('q', '')
+    size = request.args.get('size', '')
+    
+    if not query:
+        return jsonify({"error": "Missing 'q' parameter"}), 400
+    
+    # Append size to query if provided
+    search_query = f"{query} {size}".strip()
+    
+    if not all([EBAY_APP_ID, EBAY_DEV_ID, EBAY_CERT_ID]):
+        return jsonify({"error": "Missing eBay credentials"}), 500
+    
     try:
-        upc = request.args.get('upc')
-        keywords = request.args.get('keywords')
-        
-        if not upc and not keywords:
-            return jsonify({
-                'found': False,
-                'error': 'Provide either "upc" or "keywords" parameter'
-            }), 400
-        
-        query = upc if upc else keywords
-        print(f'🔍 [SEARCH] Buscando: {query}')
-        
-        # Obtener token válido
-        token = token_manager.get_valid_token()
-        
-        if not token:
-            return jsonify({
-                'found': False,
-                'error': 'Failed to obtain OAuth token',
-                'source': 'ebay_oauth'
-            }), 500
-        
-        # Hacer búsqueda en eBay Browse API
-        headers = {
-            'Authorization': f'Bearer {token}',
-            'X-EBAY-C-MARKETPLACE-ID': 'EBAY_US',
-            'X-EBAY-C-ENDUSERCTX': 'contextualshoppingflag,0',
-            'Content-Type': 'application/json',
-            'Accept': 'application/json'
-        }
-        
-        url = 'https://api.ebay.com/buy/browse/v1/item_summary/search'
+        # eBay Finding API request
         params = {
-            'q': query,
-            'limit': '10',
-            'filter': 'conditionIds:{1000}'
+            'OPERATION-NAME': 'findItemsByKeywords',
+            'SERVICE-VERSION': '1.0.0',
+            'SECURITY-APPNAME': EBAY_APP_ID,
+            'GLOBAL-ID': 'EBAY-US',
+            'RESPONSE-DATA-FORMAT': 'JSON',
+            'REST-PAYLOAD': 'true',
+            'keywords': search_query,
+            'paginationInput.entriesPerPage': '100'
         }
         
-        response = requests.get(url, headers=headers, params=params, timeout=10)
-        
-        print(f'📥 [SEARCH] Status: {response.status_code}')
-        
-        if response.status_code != 200:
-            print(f'❌ [SEARCH] Error: {response.text[:300]}')
-            return jsonify({
-                'found': False,
-                'error': f'eBay returned {response.status_code}',
-                'details': response.text[:500],
-                'source': 'ebay_oauth'
-            }), response.status_code
+        response = requests.get(EBAY_FINDING_URL, params=params, timeout=10)
+        response.raise_for_status()
         
         data = response.json()
-        items = data.get('itemSummaries', [])
         
-        print(f'✅ [SEARCH] Encontrados {len(items)} items')
+        # Extract findItemsByKeywordsResponse
+        results = data.get('findItemsByKeywordsResponse', [{}])[0]
+        items = results.get('searchResult', [{}])[0].get('item', [])
         
-        # Procesar resultados
-        result = {
-            'found': len(items) > 0,
-            'product': None,
-            'topTitles': [],
-            'pricing': {
-                'active': {'low': 0, 'high': 0, 'median': 0},
-                'sold': {'low': 0, 'high': 0, 'median': 0, 'count': 0}
+        if not items:
+            return jsonify({
+                "found": False,
+                "query": search_query,
+                "listings": 0,
+                "stats": {
+                    "minPrice": None,
+                    "avgPrice": None,
+                    "maxPrice": None,
+                    "totalListings": 0
+                },
+                "suggested": {
+                    "price": None,
+                    "margin": None
+                }
+            }), 200
+        
+        # Extract prices
+        prices = []
+        for item in items:
+            price_str = item.get('sellingStatus', [{}])[0].get('convertedCurrentPrice', [{}])[0].get('__value__', '0')
+            try:
+                price = float(price_str)
+                prices.append(price)
+            except ValueError:
+                pass
+        
+        if prices:
+            min_price = min(prices)
+            max_price = max(prices)
+            avg_price = sum(prices) / len(prices)
+            
+            # Suggested price = avg * 0.75 (25% margin)
+            suggested_price = round(avg_price * 0.75, 2)
+        else:
+            min_price = avg_price = max_price = suggested_price = None
+        
+        return jsonify({
+            "found": True,
+            "query": search_query,
+            "listings": len(items),
+            "stats": {
+                "minPrice": round(min_price, 2) if min_price else None,
+                "avgPrice": round(avg_price, 2) if avg_price else None,
+                "maxPrice": round(max_price, 2) if max_price else None,
+                "totalListings": len(items)
             },
-            'source': 'ebay_oauth'
+            "suggested": {
+                "price": suggested_price,
+                "margin": "25%"
+            }
+        }), 200
+    
+    except requests.RequestException as e:
+        return jsonify({"error": f"eBay API error: {str(e)}"}), 500
+    except Exception as e:
+        return jsonify({"error": f"Server error: {str(e)}"}), 500
+
+
+@app.route('/search-upc', methods=['GET'])
+def search_upc():
+    """
+    GET /search-upc?upc=071214003222
+    Returns: {found, upc, product, stats, suggested}
+    """
+    upc = request.args.get('upc', '')
+    
+    if not upc:
+        return jsonify({"error": "Missing 'upc' parameter"}), 400
+    
+    if not all([EBAY_APP_ID, EBAY_DEV_ID, EBAY_CERT_ID]):
+        return jsonify({"error": "Missing eBay credentials"}), 500
+    
+    try:
+        # eBay Finding API request - search by UPC
+        params = {
+            'OPERATION-NAME': 'findItemsByKeywords',
+            'SERVICE-VERSION': '1.0.0',
+            'SECURITY-APPNAME': EBAY_APP_ID,
+            'GLOBAL-ID': 'EBAY-US',
+            'RESPONSE-DATA-FORMAT': 'JSON',
+            'REST-PAYLOAD': 'true',
+            'keywords': upc,
+            'paginationInput.entriesPerPage': '20'
         }
         
-        if items:
-            result['topTitles'] = [item.get('title') for item in items if item.get('title')]
-            
-            # Procesar primer item
-            top_item = items[0]
-            price = float(top_item.get('price', {}).get('value', 0))
-            
-            result['product'] = {
-                'name': top_item.get('title', ''),
-                'itemId': top_item.get('itemId', ''),
-                'price': price,
-                'condition': top_item.get('condition', 'New'),
-                'currency': top_item.get('price', {}).get('currency', 'USD')
-            }
-            
-            if price > 0:
-                result['pricing']['active']['low'] = price
-                result['pricing']['active']['high'] = price * 1.15
-                result['pricing']['active']['median'] = price
-                result['pricing']['sold']['low'] = price * 0.85
-                result['pricing']['sold']['high'] = price * 1.15
-                result['pricing']['sold']['median'] = price
-                result['pricing']['sold']['count'] = 5
+        response = requests.get(EBAY_FINDING_URL, params=params, timeout=10)
+        response.raise_for_status()
         
-        return jsonify(result)
-    
-    except requests.exceptions.Timeout:
+        data = response.json()
+        
+        # Extract items
+        results = data.get('findItemsByKeywordsResponse', [{}])[0]
+        items = results.get('searchResult', [{}])[0].get('item', [])
+        
+        if not items:
+            return jsonify({
+                "found": False,
+                "upc": upc,
+                "product": None,
+                "stats": None,
+                "suggested": None
+            }), 200
+        
+        # Get first item (most relevant)
+        item = items[0]
+        title = item.get('title', ['Unknown'])[0]
+        price_str = item.get('sellingStatus', [{}])[0].get('convertedCurrentPrice', [{}])[0].get('__value__', '0')
+        seller = item.get('sellerInfo', [{}])[0].get('sellerUserName', ['Unknown'])[0]
+        condition = item.get('condition', ['Unknown'])[0]
+        
+        try:
+            price = float(price_str)
+        except (ValueError, TypeError):
+            price = 0
+        
+        # Extract all prices for stats
+        prices = []
+        for i in items[:10]:  # Get top 10 items
+            try:
+                p = float(i.get('sellingStatus', [{}])[0].get('convertedCurrentPrice', [{}])[0].get('__value__', '0'))
+                if p > 0:
+                    prices.append(p)
+            except (ValueError, TypeError):
+                pass
+        
+        if prices:
+            min_price = min(prices)
+            avg_price = sum(prices) / len(prices)
+            max_price = max(prices)
+            suggested_price = round(avg_price * 0.75, 2)
+        else:
+            min_price = avg_price = max_price = suggested_price = None
+        
         return jsonify({
-            'found': False,
-            'error': 'Request timeout',
-            'source': 'ebay_oauth'
-        }), 504
+            "found": True,
+            "upc": upc,
+            "product": {
+                "title": title,
+                "price": price,
+                "seller": seller,
+                "condition": condition
+            },
+            "stats": {
+                "minPrice": round(min_price, 2) if min_price else None,
+                "avgPrice": round(avg_price, 2) if avg_price else None,
+                "maxPrice": round(max_price, 2) if max_price else None,
+                "totalListings": len(items)
+            },
+            "suggested": {
+                "price": suggested_price,
+                "margin": "25%"
+            }
+        }), 200
     
+    except requests.RequestException as e:
+        return jsonify({"error": f"eBay API error: {str(e)}"}), 500
     except Exception as e:
-        print(f'❌ Error /ebay-search: {str(e)}')
-        return jsonify({
-            'found': False,
-            'error': str(e),
-            'source': 'ebay_oauth'
-        }), 500
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# SERVIDOR
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        return jsonify({"error": f"Server error: {str(e)}"}), 500
 
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port, debug=False)
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
