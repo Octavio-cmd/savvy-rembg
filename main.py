@@ -19,11 +19,19 @@ def after_request(response):
 
 @app.options('/remove-bg')
 def options_remove_bg():
-    return '', 200
+    return '', 200, {
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Headers': 'Content-Type,Authorization',
+        'Access-Control-Allow-Methods': 'GET,PUT,POST,DELETE,OPTIONS'
+    }
 
 @app.options('/remove-bg-url')
 def options_remove_bg_url():
-    return '', 200
+    return '', 200, {
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Headers': 'Content-Type,Authorization',
+        'Access-Control-Allow-Methods': 'GET,PUT,POST,DELETE,OPTIONS'
+    }
 
 @app.route('/health', methods=['GET'])
 def health():
