@@ -2,48 +2,27 @@ import os
 import base64
 import io
 from flask import Flask, request, jsonify
-from PIL import Image
+from flask_cors import CORS
+from PIL import Image, ImageEnhance
 import rembg
 
 app = Flask(__name__)
-
-# ═══════════════════════════════════════════════════════════════════════════
-# CORS HEADERS - Permite que fetch() desde navegadores (iPhone Safari) funcione
-# ═══════════════════════════════════════════════════════════════════════════
-@app.after_request
-def after_request(response):
-    response.headers.add('Access-Control-Allow-Origin', '*')
-    response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
-    response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
-    return response
-
-@app.options('/remove-bg')
-def options_remove_bg():
-    return '', 200, {
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Headers': 'Content-Type,Authorization',
-        'Access-Control-Allow-Methods': 'GET,PUT,POST,DELETE,OPTIONS'
-    }
-
-@app.options('/remove-bg-url')
-def options_remove_bg_url():
-    return '', 200, {
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Headers': 'Content-Type,Authorization',
-        'Access-Control-Allow-Methods': 'GET,PUT,POST,DELETE,OPTIONS'
-    }
+CORS(app)
 
 @app.route('/health', methods=['GET'])
 def health():
     return jsonify({"status": "ok"}), 200
 
-@app.route('/remove-bg', methods=['POST'])
+@app.route('/remove-bg', methods=['POST', 'OPTIONS'])
 def remove_bg():
     """
     POST /remove-bg
     Body: JSON with 'image' (base64 encoded image data)
     Returns: JSON with 'image' (base64 encoded image with background removed)
     """
+    if request.method == 'OPTIONS':
+        return '', 204
+    
     try:
         data = request.get_json()
         if not data or 'image' not in data:
@@ -64,6 +43,23 @@ def remove_bg():
         
         # Remove background using rembg
         output = rembg.remove(image)
+        
+        # Auto-crop: trim transparent space around the product
+        bbox = output.getbbox()
+        if bbox:
+            # Add small margin (2% of the smallest dimension)
+            margin = max(5, int(min(bbox[2]-bbox[0], bbox[3]-bbox[1]) * 0.02))
+            crop_box = (
+                max(0, bbox[0] - margin),
+                max(0, bbox[1] - margin),
+                min(output.width, bbox[2] + margin),
+                min(output.height, bbox[3] + margin)
+            )
+            output = output.crop(crop_box)
+        
+        # Increase brightness 25%
+        enhancer = ImageEnhance.Brightness(output)
+        output = enhancer.enhance(1.25)
         
         # Convert back to base64
         output_buffer = io.BytesIO()
@@ -106,6 +102,22 @@ def remove_bg_url():
         
         # Remove background using rembg
         output = rembg.remove(image)
+        
+        # Auto-crop: trim transparent space
+        bbox = output.getbbox()
+        if bbox:
+            margin = max(5, int(min(bbox[2]-bbox[0], bbox[3]-bbox[1]) * 0.02))
+            crop_box = (
+                max(0, bbox[0] - margin),
+                max(0, bbox[1] - margin),
+                min(output.width, bbox[2] + margin),
+                min(output.height, bbox[3] + margin)
+            )
+            output = output.crop(crop_box)
+        
+        # Increase brightness 25%
+        enhancer = ImageEnhance.Brightness(output)
+        output = enhancer.enhance(1.25)
         
         # Convert back to base64
         output_buffer = io.BytesIO()
