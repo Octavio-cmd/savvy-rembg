@@ -7,6 +7,24 @@ import rembg
 
 app = Flask(__name__)
 
+# ═══════════════════════════════════════════════════════════════════════════
+# CORS HEADERS - Permite que fetch() desde navegadores (iPhone Safari) funcione
+# ═══════════════════════════════════════════════════════════════════════════
+@app.after_request
+def after_request(response):
+    response.headers.add('Access-Control-Allow-Origin', '*')
+    response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
+    response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
+    return response
+
+@app.options('/remove-bg')
+def options_remove_bg():
+    return '', 200
+
+@app.options('/remove-bg-url')
+def options_remove_bg_url():
+    return '', 200
+
 @app.route('/health', methods=['GET'])
 def health():
     return jsonify({"status": "ok"}), 200
